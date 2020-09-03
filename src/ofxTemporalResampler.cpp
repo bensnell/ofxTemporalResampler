@@ -1,4 +1,4 @@
-#include "ofxTemporalResampler.hpp"
+#include "ofxTemporalResampler.h"
 
 //--------------------------------------------------------------
 ofxTemporalResampler::ofxTemporalResampler() {
