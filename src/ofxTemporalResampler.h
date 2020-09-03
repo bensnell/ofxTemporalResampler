@@ -1,84 +1,47 @@
 #pragma once
 
 #include "ofMain.h"
-#include "ofxRemoteUIServer.h"
-#include "ofxFilterUtils.h"
-#include "ofxFilterOp.h"
-#include "ofxFilterOpEasing.h"
-#include "ofxFilterOpKalman.h"
-#include "ofxFilterOpAddRate.h"
-#include "ofxFilterOpContinuity.h"
-#include "ofxFilterOpAxes.h"
-#include "ofxFilterOpAge.h"
-#include "ofxFilterOpPersist.h"
 
-// A filter manipulates realtime data using a series of ops (operations)
-class ofxFilter {
+// This class is useful for downsampling something which runs too
+// fast, or upsampling something which runs too slow. It is 
+// intended to make use of a thread's sleep function to adjust 
+// the time of a cycle. It is loosely based on the functioning
+// of Kalman filters. It has been designed to sleep for a discrete
+// number of milliseconds, instead of a continuous number.
+class ofxTemporalResampler {
 public:
+
+    ofxTemporalResampler();
+    ~ofxTemporalResampler();
+
+    // Set the desired FPS we want to sample at
+    void setDesiredFPS(float _fps);
     
-    ofxFilter();
-    ~ofxFilter();
+    // Mark a point in the cycle we monitoring
+    void update();
 
-	// Setup this filter. Use the settings to determine which layers
-	// and how many should be used
-	void setup(vector<ofxFilterOpSettings*>& _settings);
+    // Get the duration of time we should sleep for. 
+    // (User sleeps on their own)
+    int getSleepDurationMS() { return roundedWaitMS; }
 
-	// Process a value and receive the processed value
-	float process(float in);
-	glm::vec2 process(glm::vec2 in);
-	glm::vec3 process(glm::vec3 in);
-	glm::quat process(glm::quat in);
-	glm::mat4 process(glm::mat4 in);
-
-	// Process an absent measurement
-	glm::mat4 process();
-
-	// Get the last processed value
-	float getScalar();
-	glm::vec2 getPosition2D();
-	glm::vec3 getPosition();
-	glm::quat getOrientation();
-	glm::vec3 getFrameScale();
-	glm::mat4 getFrame() { return frame.m; }
-
-	// Is the last processed value valid?
-	bool isDataValid() { return frame.bValid; }
-	
-	// Flags for keeping track of whether this filter has been processed.
-	bool wasProcessed() { return bProcessed; }
-	void resetProcessFlag() { bProcessed = false; }
-
-	// What are the last times at which valid data was seen, either
-	// as input or output? (in milliseconds)
-	//uint64_t& getLastValidInputTime() { return lastValidInput; }
-	//uint64_t& getLastValidOutputTime() { return lastValidOutput; }
-	// How many frames of invalid input have passed?
-	uint64_t& getNumInvalidOutputs() { return nInvalidOutputs; }
-
-	// Delete all operators. Reset.
-	void clear();
+    // Reset the resampler
+    void reset();
 
 private:
 
-	// All operators (layers)
-	vector<ofxFilterOp*> ops;
+    float desiredFPS = 60.0;
 
-	// Last processed frame
-	ofxFilterData frame;
+    int lastRoundedWaitMS = -1; // NEEDED?
+    uint64_t lastCycleStartTimeUS = 0;
+    double avgProcessDurationMS = 0.0;
+    double avgProcessDurationMSEasing = 0.95;
+    double accumulatedError = 0.0;
 
-	// What measures (translation, rotation, scale) are valid?
-	// And by consequence, what measures need to be calculated?
-	glm::bvec3 validMeasures = glm::bvec3(false, false, false);
+    // Calculated wait time 
+    int roundedWaitMS = 0;
 
-	// Process the frame, as it has been set by other process(x) calls
-	void processFrame();
+    //queue<double> processDurationQueue;
+    //double processDurationQueueSum = 0.0;
 
-	// Has the last frame been processed with valid data?
-	bool bProcessed = false;
-
-	// What is the last time valid data was processed?
-	//uint64_t lastValidInput = 0;
-	//uint64_t lastValidOutput = 0;
-	uint64_t nInvalidOutputs = 0;
 
 };

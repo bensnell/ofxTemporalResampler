@@ -1,227 +1,87 @@
-#include "ofxFilter.h"
+#include "ofxTemporalResampler.hpp"
 
-// --------------------------------------------------
-ofxFilter::ofxFilter() {
+//--------------------------------------------------------------
+ofxTemporalResampler::ofxTemporalResampler() {
+    
+}
+
+//--------------------------------------------------------------
+ofxTemporalResampler::~ofxTemporalResampler() {
 
 }
 
-// --------------------------------------------------
-ofxFilter::~ofxFilter() {
+//--------------------------------------------------------------
+void ofxTemporalResampler::setDesiredFPS(float _fps) {
+
+    if (_fps != desiredFPS) {
+        desiredFPS = _fps;
+        avgProcessDurationMSEasing = exp(log(0.9) * 60.0 / desiredFPS);
+    }
 }
 
-// --------------------------------------------------
-void ofxFilter::setup(vector<ofxFilterOpSettings*>& _settings) {
+//--------------------------------------------------------------
+void ofxTemporalResampler::update() {
 
-	// Setup all layers using these settings
-	for (int i = 0; i < _settings.size(); i++) {
+    // How long did it take to complete the last cycle?
+    uint64_t thisTimeUS = ofGetElapsedTimeMicros();
+    long cycleDurationUS = 0;
+    if (lastCycleStartTimeUS > 0) {
+        cycleDurationUS = thisTimeUS - lastCycleStartTimeUS;
+        // Compare this to the ideal duration
+        double idealCycleDurationMS = 1000.0 / desiredFPS;
+        // Accumulate error
+        accumulatedError += double(cycleDurationUS)/1000.0 - idealCycleDurationMS;
+    }
+    lastCycleStartTimeUS = thisTimeUS;
+                        
+    // How long did it actually take to process the data? (subtract last wait time)
+    // Note: Process time also contains sleep errors (since sleeping isn't always accurate).
+    double lastProcessDurationMS = 0;
+    if (lastRoundedWaitMS >= 0) lastProcessDurationMS = double(cycleDurationUS) / 1000.0 - double(lastRoundedWaitMS);
+    
+    // Calc the average process time
+    // === METHOD 1 ===
+    avgProcessDurationMS = glm::mix(lastProcessDurationMS, avgProcessDurationMS, avgProcessDurationMSEasing);
+    // === METHOD 2 ===
+    //processDurationQueue.push(lastProcessDurationMS);
+    //processDurationQueueSum += lastProcessDurationMS;
+    //while (processDurationQueue.size() > int(desiredFPS)) {
+    //    processDurationQueueSum -= processDurationQueue.front();
+    //    processDurationQueue.pop();
+    //}
+    //avgProcessDurationMS = 0.0;
+    //if (!processDurationQueue.empty()) avgProcessDurationMS = processDurationQueueSum / double(processDurationQueue.size());
 
-		string type = ofToLower(_settings[i]->getType());
-		ofxFilterOp* op;
-		if (type == "none") {
-			op = new ofxFilterOp();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "easing") {
-			op = new ofxFilterOpEasing();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "kalman") {
-			op = new ofxFilterOpKalman();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "add-rate") {
-			op = new ofxFilterOpAddRate();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "continuity") {
-			op = new ofxFilterOpContinuity();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "axes") {
-			op = new ofxFilterOpAxes();
-			ops.insert(ops.begin() + i, op);
-		}
-		else if (type == "age") {
-			op = new ofxFilterOpAge();
-			ops.insert(ops.begin(), op);
-			ops.push_back(op);
-		}
-		else if (type == "persist") {
-			op = new ofxFilterOpPersist();
-			ops.insert(ops.begin() + i, op);
-		}
-		else {
-			ofLogError("ofxFilter") << "Operator type \"" << type << "\" is not valid.";
-			continue;
-		}
-		op->setup(_settings[i]);
-	}
+    // The average process duration will be our expected process duration
+    double expectedProcessDurationMS = avgProcessDurationMS;
+
+    // Calculate the ideal cycle duration
+    double idealCycleDurationMS = 1000.0 / desiredFPS;
+    // Calculate the ideal sleep duration, given average process time
+    double idealWaitDurationMS = idealCycleDurationMS - expectedProcessDurationMS;
+    // Adjust the sleep time given the accumulated error
+	double adjustedWaitDurationMS = max(idealWaitDurationMS - accumulatedError, 0.0);
+    // Round the sleep time
+    roundedWaitMS = round(adjustedWaitDurationMS);
+    // Accumulate error
+    accumulatedError -= (idealWaitDurationMS - roundedWaitMS);
+
+    // Save this wait time
+    lastRoundedWaitMS = roundedWaitMS;
 }
 
-// --------------------------------------------------
-float ofxFilter::process(float in) {
+//--------------------------------------------------------------
+void ofxTemporalResampler::reset() {
 
-	frame.bValid = true;
+    lastRoundedWaitMS = -1;
+    lastCycleStartTimeUS = 0;
+    avgProcessDurationMS = 0.0;
+    accumulatedError = 0.0;
+    roundedWaitMS = 0;
 
-	validMeasures[0] |= true;
-	frame.validMeasures = validMeasures;
-
-	frame.m = glm::translate(glm::vec3(in, 0, 0));
-
-	processFrame();
-
-	return getScalar();
+    //while (!processDurationQueue.empty()) processDurationQueue.pop();
 }
 
-// --------------------------------------------------
-glm::vec2 ofxFilter::process(glm::vec2 in) {
+//--------------------------------------------------------------
 
-	frame.bValid = true;
-
-	validMeasures[0] |= true;
-	frame.validMeasures = validMeasures;
-
-	frame.m = glm::translate(glm::vec3(in.x, in.y, 0));
-
-	processFrame();
-
-	return getPosition2D();
-}
-
-// --------------------------------------------------
-glm::vec3 ofxFilter::process(glm::vec3 in) {
-
-	frame.bValid = true;
-
-	validMeasures[0] |= true;
-	frame.validMeasures = validMeasures;
-
-	frame.m = glm::translate(in);
-
-	processFrame();
-
-	return getPosition();
-}
-
-// --------------------------------------------------
-glm::quat ofxFilter::process(glm::quat in) {
-
-	frame.bValid = true;
-
-	validMeasures[1] |= true;
-	frame.validMeasures = validMeasures;
-
-	frame.m = glm::toMat4(in);
-
-	processFrame();
-
-	return getOrientation();
-}
-
-// --------------------------------------------------
-glm::mat4 ofxFilter::process(glm::mat4 in) {
-
-	frame.bValid = true;
-
-	validMeasures = glm::vec3(true, true, true);
-	frame.validMeasures = validMeasures;
-
-	frame.m = in;
-
-	processFrame();
-	
-	return getFrame();
-}
-
-// --------------------------------------------------
-glm::mat4 ofxFilter::process() {
-	// This processes invalid data. 
-	
-	frame.bValid = false;
-	
-	frame.validMeasures = validMeasures;
-
-	// By default, use the last data (it doesn't matter what data is provided)
-
-	processFrame();
-
-	return getFrame();
-}
-
-// --------------------------------------------------
-void ofxFilter::processFrame() {
-
-	// Mark that this has been processed
-	bProcessed = true;
-
-	// If data is valid, mark this time
-	//if (frame.bValid) lastValidInput = ofGetElapsedTimeMillis();
-
-	// Reset the process counts of all operators
-	for (int i = 0; i < ops.size(); i++) {
-		ops[i]->resetProcessCount();
-	}
-
-	// Process the data through all operators
-	for (int i = 0; i < ops.size(); i++) {
-		// TODO: lock so we aren't in the middle of changing data?
-		ops[i]->process(frame); 
-	}
-
-	// If output data is valid, mark this time
-	//if (frame.bValid) lastValidOutput = ofGetElapsedTimeMillis();
-	
-	// Increment the count of the number of invalid outputs
-	nInvalidOutputs = frame.bValid ? 0 : (nInvalidOutputs + 1);
-}
-
-// --------------------------------------------------
-float ofxFilter::getScalar() {
-	return getTranslation(frame.m).x;
-}
-
-// --------------------------------------------------
-glm::vec2 ofxFilter::getPosition2D() {
-	auto p = getTranslation(frame.m);
-	return glm::vec2(p.x, p.y);
-}
-
-// --------------------------------------------------
-glm::vec3 ofxFilter::getPosition() {
-	return getTranslation(frame.m);
-}
-
-// --------------------------------------------------
-glm::quat ofxFilter::getOrientation() {
-	glm::mat4 m = getFrame();
-	glm::vec3 p;
-	glm::quat q;
-	decomposeMat4x4(m, p, q);
-	return q;
-}
-
-// --------------------------------------------------
-glm::vec3 ofxFilter::getFrameScale() {
-	return getScale(frame.m);
-}
-
-// --------------------------------------------------
-void ofxFilter::clear() {
-
-	for (int i = 0; i < ops.size(); i++) {
-		if (ops[i] != NULL) {
-			ops[i]->clear();
-			delete ops[i];
-		}
-	}
-	ops.clear();
-	frame.clear();
-	validMeasures = glm::bvec3(false, false, false);
-	bProcessed = false;
-	nInvalidOutputs = 0;
-}
-
-// --------------------------------------------------
-
-
-// --------------------------------------------------
+//--------------------------------------------------------------
